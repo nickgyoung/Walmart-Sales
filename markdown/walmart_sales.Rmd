@@ -1,0 +1,578 @@
+---
+title: "Walmart Sales Analysis"
+author: "Nick Young"
+date: '2020-11-18'
+tags: [R, Walmart, Sales Forecasting, Linear Regression, Multivariate Regression, ggplot]
+output: 
+  html_document: 
+    theme: cosmo
+---
+```{css echo = FALSE}
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-y: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+  max-height: 30vh !important;
+}
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+options(height=30, width = 200)
+```
+
+```{r}
+#packages
+library(tidyverse)
+library(lubridate)
+library(caret)
+library(knitr)
+library(ggpubr)
+library(magrittr)
+library(formatR)
+
+#Turning of scientific notation
+options(scipen = 99999)
+
+#changing root dir
+
+
+#data load
+walmart_sales <- read_csv('clean data/clean_walmart_sales.csv' )
+walmart_sales <- walmart_sales[,-1]
+
+```
+
+<a title="see Image talk:Walmart exterior.jpg
+
+Walmart Exterior
+
+This file was made by User:Sven from Wikipedia under Creative Commons Attribution-Share Alike 3.0 licensing
+
+ &lt;http://creativecommons.org/licenses/by-sa/3.0/&gt;, via Wikimedia Commons" href="https://commons.wikimedia.org/wiki/File:Walmart_exterior.jpg"><img width="512" alt="Walmart exterior" src="https://upload.wikimedia.org/wikipedia/commons/thumb/0/04/Walmart_exterior.jpg/512px-Walmart_exterior.jpg"></a>
+ 
+## Purpose
+
+This post is made to address a [task](https://www.kaggle.com/vik2012kvs/walmart-dataretail-analysis/tasks?taskId=2434) from a data set posted to Kaggle. I will comply with task requests to exhibit how I would go about real-world analysis in regards to weekly-sales over a number of years to drive insights and then develop a model to forecast sales.
+For this particular post, more important to me than the chance to practice visualization is how well I fare in forecasting through multivariate regression.
+I will only include code chunks beginning with my regression analysis, but full code for this markdown file and my drafting script will be available on Github.
+
+## The Shape of the Data
+
+``` {r echo = F, tidy = T}
+print('A summary of our data')
+summary(walmart_sales)
+print('The first 6 rows')
+head(walmart_sales)
+
+```
+ 
+ This data set is a time series of 45 unique Walmart stores, their reported weekly sales from 2010-02-05 to 2012-10-26, and measurements of their CPI (consumer price index - a measurement of inflation), unemployment, local fuel price, temperature, and whether or not that sales week marked a holiday sales event.
+ 
+## Which store has maximum sales?
+ 
+``` {r, echo = FALSE, include = FALSE}
+walmart_sales %>%
+  filter(weekly_sales == max(weekly_sales))
+```
+
+Store 14 had the highest reported sales on the week ending 2010-12-24. For that week, they sold a total of $3,818,686 USD. 
+
+### In Total?
+``` {r, include = FALSE}
+walmart_sales %>% group_by(store) %>% summarise(sales = sum(weekly_sales)) %>% arrange(desc(sales))
+
+walmart_sales %>% group_by(store) %>% summarize(avg_sales = mean(weekly_sales)) %>% arrange(desc(avg_sales))
+```
+For the whole time period, Store 20 had the highest amount of sales with an aggregate total of $301,397,792.
+
+### On Average?
+
+Store 20 the highest average weekly sales figure of $2,107,676
+
+## Which store had max standard deviation (std dev)?
+```{r, include = FALSE}
+walmart_sales %>% group_by(store) %>% summarize(sdev = sd(weekly_sales)) %>% arrange(desc(sdev)) %>% head(3)
+```
+Store 14 had the largest std dev of $317,569. It should be noted that the weekly sales of this store to not follow a normal distribution, so we should not draw conclusions about the spread of the sales in regards to the std dev.
+
+``` {r}
+ggdensity(walmart_sales %>% filter(store == 14) %$% weekly_sales, title = "Distribution of Store 14's Weekly Sales" , xlab = "weekly Sales")
+```
+
+### How does std dev compare to the mean? (coefficient of variation)
+
+```{r include = TRUE, tidy = TRUE, echo = FALSE}
+print('A table arranged by stores with highest coefficient of variation, truncated at store 14')
+head(walmart_sales %>% 
+       group_by(store) %>% 
+       summarize(sdev = sd(weekly_sales) , avg = mean(weekly_sales), coef_var = (sdev/avg)*100) %>% 
+       arrange(desc(coef_var)), 13)
+```
+
+Despite store 14 having the largest std dev, in regards to its own mean weekly sales, the standard deviation is not all that big. That is to say, store 14 makes an average weekly sales rate of $2,020,978. Compare to that number, a std dev of \$317,569 is not all that large. On the other hand, the store with largest relative std dev (coefficient of variation) is store 35 that makes a average weekly sales of \$919,725 and has a std dev of \$211,243. Coefficient of variation, or the relative standard deviation is expressed as the ratio between std dev and the mean.
+
+## Which Store/s Had Good Quarterly Growth Rate in Q3' 2012
+
+Addressing this task appropriately requires an understanding of Walmart's fiscal calendar. Being that I don't work there or have any connections in the know, I consulted Google. [These](https://www.8thandwalton.com/blog/walmart-fiscal-year-calendar/) are the results I took a cue from and proceeded with my analysis based on. The fiscal year begins in February.
+
+```{r echo = FALSE}
+walmart_sales %>% 
+  #filter to dates in Q2 and Q3 2012
+  filter(date >= '2012-05-01', 
+         date < '2012-11-01') %>% 
+  #Mutate to assign quarter variable based on date
+  mutate(quarter = ifelse(date < '2012-08-01', 
+                          'Q2' , 'Q3')) %>% 
+  group_by(store, quarter) %>% 
+  summarize(sales = sum(weekly_sales)) %>% 
+  #pivot wide to perform column-based calculations
+  pivot_wider(id_cols = 'store' , 
+              names_from = 'quarter', 
+              values_from = 'sales') %>% 
+  #calculate growth rate between quarters
+  mutate(Q3_growth = ((Q3-Q2)/Q2)*100, 
+         store = as.factor(store)) %>%
+  #filtering because many stores have negative growth rate
+  filter(Q3_growth > 0) %>% 
+  ggplot(aes(store, Q3_growth, 
+             fill = store)) + 
+  geom_col() + 
+  labs(title = 'Q2 - Q3 2012 Growth', subtitle = 'For stores with positive growth') + 
+  theme_minimal() + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab('Q3 2012 Growth %') + scale_fill_brewer(palette = 'Set2', name = 'Store')
+```
+
+Store 39 had the highest growth percent in Q3 2012 from the previous quarter. They grew sales by ~2.7%. 
+Only the 7 stores shown in the plot had a positive growth rate.
+How many stores had a positive growth rate compared to last year Q3?
+
+## And Yearly Growth Rate of Q3 2012?
+
+```{r, echo = FALSE}
+#This creates a vector of rows for observations in Q3 2011 or 2012
+q3_vector <- 
+  which(between(walmart_sales$date, 
+                as.Date('2011-08-01') , 
+                as.Date('2011-11-01'))) %>% 
+  append(which(between(walmart_sales$date, 
+                       as.Date('2012-08-01') , 
+                       as.Date('2012-11-01'))))
+
+#This filters the data to our vector of observations, and keeps the top 10 by growth rate
+q3_annual <-walmart_sales[q3_vector,] %>% 
+  group_by(store, year = year(date)) %>% 
+  summarize(q3_sales = sum(weekly_sales)) %>% 
+  #pivot wide to perform column-wise calculations for growth rate
+    pivot_wider(id_cols = 'store', 
+              names_from = 'year' , 
+              values_from = 'q3_sales') %>% 
+  mutate(annual_growth = (`2012` - `2011`)/`2011` *100, 
+         store = as.factor(store)) %>% 
+  arrange(desc(annual_growth))
+
+q3_annual %>%
+  head(10) %>%
+  ggplot(aes(store, annual_growth,
+             fill = store)) +
+  geom_col() +
+  labs(title = 'Top ten stores by growth %', subtitle = 'Growth from LY Q3') + 
+  theme_minimal() + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab('Growth %') + scale_fill_brewer(palette = 'Set3', name = 'Store')
+
+paste('A total of',length(unique(q3_annual %>%
+  filter(annual_growth >0) %$% store)), 'stores had positive Q3 growth rate from 2011 to 2012')
+```
+
+A lot more stores had positive growth from Q3 2011 to 2012 than stores that had positive growth from Q2 to Q3 in 2012. 
+
+## Holidays and their Impact on Sales
+
+The kaggle task post suggests that some holiday events have a negative impact on sales, whereas some others have a positive impact on sales. I find issue with that suggestion or how it is worded: sales events are usually used in reaction to current sales. They're used to sell-through inventory, to invigorate sales growth in an otherwise dull period, to attract customers into the store on well-established holidays. I do believe its possible for a holiday to have a positive impact on sales (see Black Friday), but I find it strange to suggest a holiday sales event could incur worse sales than if it were not a holiday sales event. It would have to be one universally tasteless and insensitive holiday to turn people away from shopping.
+
+```{r echo = FALSE}
+#The next four lines define a vector of dates that are considered holiday sales 
+superbowl <- as.Date(c('2010-02-12','2011-02-11','2012-02-10','2008-02-13'))
+labour_day <- as.Date(c('2010-09-10','2011-09-09','2012-09-07','2013-09-06'))
+thanksgiving <- as.Date(c('2010-11-26','2011-11-25','2012-11-23','2013-11-29'))
+christmas <- as.Date(c('2010-12-31','2011-12-30','2012-12-28','2013-12-27'))
+
+walmart_sales <- walmart_sales %>%  mutate(holiday = 
+      case_when(date %in% superbowl ~ 'superbowl', 
+                date %in% labour_day ~ 'labour day',
+                date %in% thanksgiving ~ 'thanksgiving',
+                date %in% christmas ~ 'christmas'))
+
+#This function assigns season to a date based on the dates available in our data
+getSeason <- function(x){
+  
+  winter <- seq(as.Date('2009-12-21'), as.Date('2010-03-20'), by = 'days') %>% append(seq(as.Date('2010-12-21'), as.Date('2011-03-20'), by = 'days')) %>% append(seq(as.Date('2011-12-21'), as.Date('2012-03-20'), by = 'days'))
+  
+  fall <- unique(walmart_sales$date[!walmart_sales$date %in% winter] %>% subset(grepl('^.{4}-09.|^.{4}-10.|^.{4}-11.|^.{4}-12.', .)) %>% subset(. >= as.Date('2010-09-22'))) %>% .[-c(14,15,16, 30, 31, 32)]
+  
+spring <- unique(walmart_sales$date[!walmart_sales$date %in% winter %>% append(fall)] %>% subset(grepl('^.{4}-03.|^.{4}-04.|^.{4}-05.|^.{4}-06.' , .))) %>% .[-c(14, 28, 42, 43)]
+
+summer <- unique(walmart_sales$date) %>% subset(!. %in% (spring %>% append(fall) %>% append(winter)))
+
+ifelse(x %in% fall, 'Fall', 
+       ifelse(x %in% winter, 'Winter',
+              ifelse(x %in% summer, 'Summer', 'Spring')))
+
+}
+
+
+walmart_sales %>% 
+  group_by(date, holiday) %>% 
+  summarize(weekly_sales = mean(weekly_sales)) %>% 
+  ggplot(aes(date, weekly_sales, 
+             color = holiday)) + 
+  geom_point(alpha = 0.75) + theme_minimal() +ylab('Weekly Sales') + xlab('Date') + labs(title = 'Average Weekly Sales' , subtitle = 'For stores 1 through 45') + scale_color_discrete(name = 'Holiday')
+```
+
+This scatter plot allows us to see the average sales for the whole company (meaning our sample of 45 stores) for all weeks in our dataset. Weeks containing a Holiday sales event are filled with color. Immediately we might notice that 'Thanksgiving' is quite high when compared to its neighbor sales weeks and 'Christmas' is rather low. It should be noted these holiday events don't actually fall on the holiday they are named for. 'Thanksgiving' falls on Black Friday and 'Christmas' is always the last Friday in December. Now it makes sense as to how these holiday sales are impacted by when they occur: Black Friday is a long-running and possibly the largest shopping holiday in America. This is probably the only holiday I would argue has a direct impact on sales. The 'Christmas' holiday event sees such a low performance in sales as this is likely due to many markdowns meant to clear inventory of gifts and decorations that were not picked up at full price just a week earlier. That is, it's not because it is a Christmas holiday sales event that causes it to see such poor performance, it is because it happens a few days after Christmas when shopping is no longer a priority.
+
+```{r}
+walmart_sales %>% 
+  filter(holiday_flag == 0) %>%  #removes holidays
+  mutate(season = getSeason(date)) %>%  #gets season in new variable
+  group_by(season) %>% 
+  summarize(avg_season_sales = mean(weekly_sales)) %>% #takes avg weekly sales per season
+  ggplot(aes(season, avg_season_sales)) + #pipes to ggplot
+  geom_col(aes(fill = season, color = season)) + 
+  geom_point(data = walmart_sales %>% #new data, format as above except for holidays
+                filter(holiday_flag ==1) %>%
+                mutate(season = getSeason(date)) %>% 
+                group_by(holiday, season) %>% 
+                summarize(avg_sales = mean(weekly_sales)), aes(season, avg_sales, shape = holiday, ), color = 'black') + 
+  coord_cartesian(ylim = c(900000, 1500000)) + ylab('$') + xlab('Season') + labs(title = 'Average Weekly Sales per Season', subtitle = 'with average weekly sales per holiday') + theme_minimal()
+
+```
+
+This bar chart allows us to visualize the average weekly sale per season against the average weekly sales for a holiday within that season. Black Friday has much higher sales than the average for the season. 'Christmas' performs much worse, Labor Day and Superbowl perform slightly better than the average.
+
+## Sales by Month
+
+```{r}
+walmart_sales <- 
+  walmart_sales %>% 
+  mutate(month = month(date, label = TRUE))
+
+walmart_sales %>% 
+  group_by(month) %>% 
+  summarize(avg_sales = mean(weekly_sales)) %>% 
+  ggplot(aes(month, avg_sales)) + 
+  geom_col() + 
+  labs(title = 'Average Sales per Month',
+       subtitle = 'of data provided') +
+  theme_minimal()+
+  ylab('Average Sales')
+```
+
+The problem with this chart is that we don't have a full three years of dates represented in our data set. As mentioned previously, weekly sales recording begins with 2010-02-05 and ends in 2012-10-26. There is only one year we have a full range of months available to observe. If any years had markedly different sales overall, then an average of two observations compared to three would not be reliable to compare.
+
+```{r}
+walmart_sales %>%
+  mutate(date = floor_date(date, unit = 'month')) %>%
+  group_by(date, month) %>%
+  summarize(weekly_sales = sum(weekly_sales)) %>%
+  ggplot(aes(date, weekly_sales, fill = month)) + 
+  geom_col() + 
+  ggtitle('Walmart total sales per month') + 
+  scale_x_date(breaks = '3 months') + 
+  theme(axis.text.x = element_text(angle = -90, vjust = -0.05)) + 
+  scale_fill_discrete(name = 'Month') +
+  ylab('Sum of Weekly Sales')
+```
+
+This chart gives us a better understanding of each month compared by total sales, but can be difficult given how many colors there are to discern. Nonetheless, we can see that December is consistently the highest selling month and January is the lowest selling month, just as our previous plot had shown.
+
+```{r}
+print('Not everything needs a plot. Here is a table of total sales instead.')
+
+walmart_sales %>% mutate(year = year(date), month = month.name[month(date)]) %>%
+  group_by(year, month) %>%
+  summarize(total_sales = sum(weekly_sales)) %>% 
+  pivot_wider(id_cols = 'month' , names_from = 'year', values_from = 'total_sales')
+```
+Sometimes a chart is necessary, sometimes there's too much information to visualize. This should be sufficient to understand the yearly growth of sales in a given month per year and when a month in a given year is missing.
+
+## Sales by Semester
+I'm not sure if semester has any different type of meaning in business, but how I understand it is by an academic semester. The first semester beginning in the Fall and ending in the Winter. The second Semester comprising the other seasons.
+
+```{r}
+#defining a new df as we will have to assign factor level to a new variable
+walmart_sales_semester_agg <- walmart_sales %>%
+  mutate(season_year = getSeason(date)) %>%
+  #this mutate call adds the year after the season for all seasons except Winter
+  mutate(season_year = if_else(season_year %in% c('Fall','Spring','Summer'), 
+                               paste0(season_year, year(date)), season_year)) %>%
+  arrange(season_year,date) %>%
+  #this mutate adds year to winter, which is year-1 for any month after December
+  mutate(season_year = 
+           if_else(!grepl('^W.', season_year), 
+                   season_year, 
+                   if_else(month == 'Dec', 
+                           paste0(season_year, year(date)), 
+                           paste0(season_year,as.numeric(year(date)-1))))) %>%
+  group_by(season_year, store) %>%
+  summarize(weekly_sales = sum(weekly_sales)) %>%
+  pivot_wider(names_from = 'season_year', values_from = 'weekly_sales') %>% 
+  mutate(FW2009 = Winter2009, #Because February 2010 belongs to the Winter 2009 season 
+         FW2010 = Fall2010+ Winter2010, 
+         FW2011 = Fall2011+Winter2011, 
+         FW2012 = Fall2012,
+         SS2010 = Spring2010+Summer2010, 
+         SS2011=Spring2011+Summer2011, 
+         SS2012=Spring2012+Summer2012) %>%
+  select(store, FW2009:SS2012) %>%
+  pivot_longer('FW2009':'SS2012', names_to = 'semester')
+
+#assigning factor level to new semester variable
+walmart_sales_semester_agg$semester <- factor(walmart_sales_semester_agg$semester, levels = c(walmart_sales_semester_agg$semester[c(1,5,2,6,3,7,4)]))
+
+walmart_sales_semester_agg %>%
+  group_by(semester) %>%
+  summarize(value = sum(value))%>% 
+  arrange(semester) %>% 
+  #omitting any semesters that are missing months/weeks
+  filter(semester %in% c('FW2010','SS2011','FW2011','SS2012')) %>%
+  ggplot(aes(semester, value)) + geom_col() + ggtitle('Sales by Semester')+  coord_cartesian(ylim = c(1100000000, 1300000000)) + ylab('Total Sales') + theme_minimal()
+```
+
+A semester view isn't too meaningful in this case, being that we are missing months of data here and there. Nevertheless, we can see that sales have taken a hit since the 2010-2011 academic year.
+
+## Statistical Forecasting and Linear Regression
+
+A linear regression is a statistical model meant to simulate the relationship between a dependent variable (Y) and independent variable/s (x). When there is only one independent variable, this is known as simple linear regression, when there are multiple independent variables, this is known as multiple linear regression. 
+
+Today, the kaggle prompt requests that we make a multiple linear regression to forecast weekly sales. Now knowing that sales is our Y variable, we can construct a formula to give shape to our model. We will only design a linear regression model for one location (store 1) as forecasting with the x variables we will use should only be done at the individual location level (will explain later).
+
+### The first model
+
+```{r, echo = TRUE}
+#a separate df for observations at store 1
+store1_all_dates <- walmart_sales %>% 
+  mutate(value = 1) %>%
+  spread(holiday, value, fill = 0) %>% #this line one-hot encodes the holiday variable 
+  filter(store ==1) %>%
+  select(date, weekly_sales, temperature, fuel_price, cpi, unemployment, christmas, `labour day` , superbowl, thanksgiving) %>%
+  mutate(day_of_year = yday(date)) %>% #this changes the date into a numeric integer based on day of the year
+  arrange(date)
+
+fmla <- as.formula('log(weekly_sales) ~ temperature + cpi + fuel_price +  unemployment + christmas + `labour day` + superbowl + thanksgiving + day_of_year + I(temperature^2) + I(cpi^2) + I(fuel_price^2) + I(unemployment^2)')
+
+full_dates_model <- lm(fmla, store1_all_dates)
+
+summary(full_dates_model)
+
+```
+
+This model attempts to describe linear relationships between our X variables,
+
+* recorded **temperature** at store 1 corresponding to the date recorded
+* **CPI** (consumer price index), which is a measurement of inflation, for store 1 corresponding to the date recorded
+* the prevailing **fuel price** of the region around store 1 for the recorded date
+* the prevailing **unemployment rate** for the area around store 1 on the recorded date
+* Whether or not it was any of our four **Holiday** events (marked by a 1 for yes and 0 for no)
+* the **day of the year** given that January 1st will be recorded as 1 and the last day in December will be recorded as 365 or 364
+
+and our Y variable of weekly sales (put into log form - which can be read as a percent change).
+
+So we can interpret the coefficient estimates of our model as a percent change in weekly sales given one unit of increase for that given variable (controlled for all other variables). Meaning, on two days that are exactly the same in all the ways our independent variables can describe (except for 'Christmas'), one of those days would be estimated to have 19.4% less sales than the other day if it happened to be a 'Christmas' sales event. Recall from our earlier graph that the 'Christmas' holiday sales event average weekly sales was substantially lower than the average for the season. Likewise, the model estimates a 4.7% decrease in sales given a dollar increase in fuel price, and 21.8% increase in sales if its 'Thanksgiving' AKA Black Friday.
+
+One thing to be aware of is that not all of these estimates are statistically significant. Our model also provides the P-value for every coefficient estimate it has, which is the probably that this relationship it is describing numerically is happening due to random chance rather than an actual measured relationship. When a p-value is less than 5%, we can claim that estimate as 'statistically significant.' Our model reports that the following variable coefficient estimates are statistically significant:
+
+* Unemployment
+* Unemployment squared
+* Christmas
+* Thanksgiving
+* The day of the year
+
+Also, there is our R-squared value, and adjusted R-squared. R-Squared is a statistic used to describe just how much of the variance in our observed Y value is explained by our variables. Meaning, this model only accounts for 34.9% of the variance we see in weekly sales. The balance is unexplained by our model. Adjusted R-squared is the r-squared variable penalized for however many variable we have.
+
+Here is a poor -- but hopefully still useful -- analogy to explain adjusted R-squared. If I were a psychic and told you to pick a number between 1 and 10, I could possibly guess your number on the first try, or the next, or the next and so on. I could go through all those numbers until I 'guess' your number, but my psychic abilities would be less and less impressive the more I guess. That is what the adjusted r-squared does: it penalizes our model for however many variables we have fitted. This is because of a concept called overfitting. Like being a psychic, we can pack our model full of independent variables and that would improve our models ability to make estimates by some amount (any new information is just info for the model to work with). Just like being a psychic, adding in a ton of variables to hopefully improve the r-squared is not a meaningful tactic, and so our adjusted r-square gives us a new form of r-squared penalized by how many variables we have.
+
+## Model diagnostics
+
+There are many ways to diagnose how well a model 'performs.' Oftentimes, people will turn to the r-squared value, they may also look at their residuals versus fitted values, assessing the distribution of the residuals, etc. However, one of the more useful diagnostics of modeling, and perhaps the best as for our use case is testing it by making predictions. Typically, when statisticians devise a model, they will use it on data the model has not seen to make predictions. Then they can visibly observe what the model will predict given new information versus what the actual observed value is. Unfortunately, in this instance we have used all of our weekly sales observations (for store 1) to make our previous model. I'd like to believe that our model as it is now would perform the best of alternatives known to me, but I'll have no way of testing this without making predictions. For my next model, I will split the last data set we made into two testing and training data sets so that we can build a model and then test how it performs on data it has never seen before.
+
+## The second model
+
+```{r echo = TRUE}
+#training data
+ store1_train <- walmart_sales %>% 
+  mutate(value = 1) %>%
+  spread(holiday, value, fill = 0) %>% #this line one-hot encodes the holiday variable 
+  filter(store ==1) %>%
+  select(date, weekly_sales, temperature, fuel_price, cpi, unemployment, christmas, `labour day` , superbowl, thanksgiving) %>%
+  mutate(day_of_year = yday(date)) %>% #this changes the date into a numeric integer based on day of the year
+  filter(str_detect(date, regex('^2011.*$'))) #this filters the data to only dates in 2011
+
+#test data
+store1_test <- walmart_sales %>% 
+  mutate(value = 1) %>%
+  spread(holiday, value, fill = 0) %>% #this line one hot encodes the holiday variable 
+  filter(store ==1) %>%
+  select(date, weekly_sales, temperature, fuel_price, cpi, unemployment, christmas, `labour day` , superbowl, thanksgiving) %>%
+  mutate(day_of_year = yday(date)) %>% #this changes the date into a numeric integer based on day of the year
+  filter(!str_detect(date, regex('^2011.*$'))) #this filters the data to dates not in 2011
+
+fmla <-  as.formula('log(weekly_sales) ~ unemployment + I(temperature^2) + christmas + `labour day` + superbowl + thanksgiving')
+
+#our new model
+single_year_test_model <- lm(fmla ,  data = store1_train)
+
+summary(single_year_test_model)
+
+store1_test <- store1_test %>%
+  mutate(prediction = predict(single_year_test_model, newdata = store1_test))
+
+ggplot(store1_test, aes(date, weekly_sales)) + geom_line() + geom_point(aes(date, exp(prediction), color = 'prediction')) + ggtitle('Forecast of Sales for Store 1') + labs(subtitle = 'For 2010 and 2012') + ylab('Weekly Sales') + theme_minimal() + theme(legend.title = element_blank())
+```
+Our new model takes the following x variables:
+
+* unemployment
+* temperature squared
+* and the four holidays
+
+These were chosen by iteratively adjusting the model and using it to plot prediction against observations in my test data. Despite having a higher r-squared value in different models, those same models had predictions that were astoundingly off from the observed values of weekly sales. R-Squared isn't always a good metric for model performance, it can be very misleading. 
+
+It's also worth noting that no predictions are made between 2011 and 2012 given those were the observations used to train our model. Likewise, the line of observed sales between 2011 and 2012 is not meaningful either, this is just the plot connecting the two last know points.
+
+This model is not too bad, but still I wonder... could it be improved by sampling observations from all three years? I only used 2011 in my training data. There must be variations between all my independent variables between all three years that the model is not being shown. Let's try again.
+
+## The third and final model
+
+```{r echo = TRUE}
+#initializing counts for a for loop
+x<- 1
+y<- 54
+z<- 107
+
+#initializing empty vectors to later filter by index
+num_vec1 <- vector('numeric', 18L)
+num_vec2 <-  vector('numeric', 17L)
+num_vec3 <-  vector('numeric', 17L)
+
+#creates first vector of row-indices for filtering
+for (i in 1:18){
+  num_vec1[i] <- x
+  x<- x+3
+}
+
+#creates second vector of row-indices
+for(i in 1:17){
+  num_vec2[i] <- y
+  y<- y+3
+}
+
+#creates third vector of row-indices
+for(i in 1:17){
+  num_vec3[i] <- z
+  z <- z+3
+}
+
+#creates one vector from all above
+count <- 1
+dates_vec <- vector('numeric', 52L)
+for (i in 1:18){
+  dates_vec[count] <- num_vec1[i]
+  dates_vec[count+1] <- num_vec2[i]
+  dates_vec[count+2] <- num_vec3[i]
+  count <- count + 3}
+
+#rearranges the indices appropriately 
+dates_vec <- dates_vec[1:52]
+
+store1_all_dates$date[dates_vec] # several dates are NA since 2012 doesn't go past October. We will replace these dates with its 2010 or 2011 comparable
+
+dates_vec[c(42,45,48,51)]
+dates_vec[42] <- 42
+dates_vec[45] <- 97
+dates_vec[48] <- 48
+dates_vec[51] <- 103
+
+fmla <- as.formula('log(weekly_sales) ~ unemployment + temperature + cpi + fuel_price + christmas + `labour day` + superbowl + thanksgiving + day_of_year')
+
+#new model from training
+rndm_date_train_model <- lm(fmla, data = store1_all_dates[dates_vec,])
+
+
+rndm_dates_test_store_1 <- store1_all_dates[-dates_vec,]
+
+rndm_dates_test_store_1 <- rndm_dates_test_store_1 %>%
+  mutate(prediction = predict(rndm_date_train_model, newdata = rndm_dates_test_store_1))
+
+summary(rndm_date_train_model)
+
+ggplot(rndm_dates_test_store_1, aes(date, weekly_sales)) + 
+  geom_line() + 
+  geom_point(aes(y = exp(prediction), color = 'predition')) + 
+  ggtitle('Forecast of sales for Walmart Store 1') + 
+  ylab('Weekly Sales $') + 
+  labs(subtitle = 'Prediction in red')
+```
+
+This looks like our best performing model yet! One annoying thing is that it does not capture the huge spike in sales the week ending before Christmas. Even though this is not considered a holiday event from Walmart's perspective, we should use our domain knowledge of there being last minute Christmas gift shopping during this week
+
+```{r echo = TRUE}
+store1_all_dates <- store1_all_dates %>% mutate(before_xmas = if_else(grepl(regex('^.{4}-12-24|^.{4}-12-23|^.{4}-12-22|^.{4}-12-21|^.{4}-12-20|^.{4}-12-19|^.{4}-12-18'), date), 1, 0))
+
+fmla <- as.formula('log(weekly_sales) ~ unemployment + temperature + cpi + fuel_price + christmas + `labour day` + superbowl + thanksgiving + before_xmas + day_of_year')
+
+rndm_date_test_model <- lm(fmla, data = store1_all_dates[dates_vec,])
+
+rndm_dates_removed_store_1 <- store1_all_dates[-dates_vec,]
+
+rndm_dates_removed_store_1 <- rndm_dates_removed_store_1 %>%
+  mutate(prediction = predict(rndm_date_test_model, newdata = rndm_dates_removed_store_1))
+
+summary(rndm_date_test_model)
+
+ggplot(rndm_dates_removed_store_1, aes(date, weekly_sales)) + geom_line() + geom_point(aes(y = exp(prediction)), color = 'red') + ggtitle('Forecast of sales for Walmart Store 1') + ylab('Weekly Sales $') + labs(subtitle = 'Prediction in red')
+```
+
+I feel quite satisfied with out results! From a training model that utilized 52 observations of 
+
+* unemployment
+* temperature
+* CPI
+* fuel price
+* binary values indicating whether it was Christmas, Labor Day, Thanksgiving, or a Superbowl sales event
+* Whether or not it was the week before Christmas
+* The numeric day of the year
+
+we were able to predict with some accuracy for 91 observations of weekly sales.
+
+## Hypothesis to the relationships of the variables
+
+However the model interprets the relationship between our variables can be seen above from the output of the code chunk, but I wanted to provide my generalized estimation of the relationships between the variables.
+
+1. Unemployment - across the various models that have been devised, the multiple linear regression has estimated both sales increased and decreases given a one unit increase in unemployment. My intuition tells me the more people that are unemployed in a society then the less discretionary spending there is. I would believe there is a negative linear relationship between unemployment and sales. I believe our model estimated any positive linear relationships based on their being more observations (and particularly high sales outliers) at greater levels of unemployment. 
+
+`r plot(store1_all_dates$unemployment, store1_all_dates$weekly_sales)`
+
+2. Temperature - at large, I believe the relationship between temperature and sales to be more of a closed parabola than a line. Controlling for other variables, on days of extreme cold or heat sales would be lower being that it might be too uncomfortable to leave the house. However, not all climates have ranges of extreme cold and extreme heat. Most stores will fall into one climate zone where they would see one end of the spectrum. In the case of store 1, the lowest temperature is 35 degrees farenheit and the highest is 91. Since the coldest likely comes around the Winter, near sales-driving holidays/event, and the hottest would be in the Summer which we know has the lowest average weekly sales of all seasons, this is likely why our model estimates at negative linear relationship.
+3. CPI - being that Consumer Price Index is a measure of inflation, I would imagine that as this number goes up then sales would too. At higher levels of CPI  a typical group of consumer goods would cost more money. Being that Walmart is a retailer in consumer goods, as CPI goes up their products would likely have an increased base retail price which would show up in our data as an increase in sales amount, although it is likely a better predictor of price than sales.
+4. Fuel price - controlling for all other variables, I would imagine as fuel price goes up then people would stay at home more, avoid travel, and likewise shop less.
+5. Holidays
+  + I expect sales to increase for Black Friday
+  + Sales to decrease int he sales event after Christmas
+  + Labor Day and Superbowl to increase or decrease slightly - more data would be helpful to better determine this relationship
+6. The week before Christmas - sales should see a significant increase during this period
+7. Day of the year - I imagine this is best approximated by an exponential curve. Sales appear to be quite low throughout Winter after December and appear relatively stationary until the near end of the year during the holiday season when they increase significantly.
+
+## Reflections and Learnings
+
+The inspiration behind this post was a yearning to tackle a more traditional business issue and foster my skills in linear regression and its interpretation. Being that this statistical method is still relatively new to me, I welcome and criticisms and advice in model development, diagnostics, and analysis. In attempting this task I also developed skills in R coding by utilizing adept for loops, one-hot encoding variables for regression analysis, and creating user-defined functions to condense repeat tasks. 
+
+I'm happy with the results of my linear model and would have been happy to test it on more data outside of the set provided. In the future, I think I would like to try other statistical models for forecasting. I made an attempt to learn ARIMA modeling (a typical model for forecasting time series data), but found it to be recondite and difficult to get grasp of in the time frame of which I wanted this post to go live. 
+
+
+
+
+
